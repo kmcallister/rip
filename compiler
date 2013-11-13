@@ -1,0 +1,71 @@
+#!/usr/bin/env python
+import sys
+import subprocess
+
+
+# Read a Brainfuck program itself (not a filename) from the first
+# command-line argument or from stdin.
+
+if len(sys.argv) > 1:
+    prog = sys.argv[1]
+else:
+    prog = sys.stdin.read()
+
+prog = list(enumerate(c for c in prog if c in '+-<>[].,'))
+
+
+# Match loop brackets and record the jump target of each.
+
+stack  = []
+branch = {}
+
+for i,c in prog:
+    if c == '[':
+        stack.append(i)
+    elif c == ']':
+        try:
+            j = stack.pop()
+        except IndexError:
+            raise ValueError, 'unmatched ]'
+        branch[j] = i+1
+        branch[i] = j+1
+
+if len(stack) > 0:
+    raise ValueError, 'unmatched ['
+
+
+# Build some Python format strings like
+#
+#     k{here:08d}: do_branch k{cont:08d} k{branch:08d}
+#
+# which is an assembly label and an invocation of one of the macros
+# defined in rip.asm.
+
+lbl  = lambda which: 'k{'+which+':08d}'
+inst = lambda inst, *args: ' '.join([lbl('here'), ':', inst, ', '.join(map(lbl, args))])
+
+insts = {
+    '+': inst('do_inc',    'cont'),
+    '-': inst('do_dec',    'cont'),
+    '<': inst('do_left',   'cont'),
+    '>': inst('do_right',  'cont'),
+    '[': inst('do_branch', 'branch', 'cont'),
+    ']': inst('do_branch', 'cont', 'branch'),
+    '.': inst('do_output', 'cont'),
+    ',': inst('do_input',  'cont')
+}
+
+
+# Output each Brainfuck instruction using the appropriate format
+# string.
+
+with open('out.asm', 'w') as out:
+    i = 0  # in case of empty program
+    for i,c in prog:
+        out.write(insts[c].format(here=i, cont=i+1, branch=branch.get(i))+'\n')
+    out.write((lbl('here') + ' : jmp syscall_exit\n').format(here=i+1))
+
+# Assemble and link.  ld -N gives us writable .text via some
+# OMAGIC compatibility mode.
+subprocess.check_call('nasm -f elf64 rip.asm', shell=True)
+subprocess.check_call('gcc -Wl,-N -nostdlib -o rip rip.o', shell=True)
